@@ -11,6 +11,7 @@ import (
 	"github.com/povilasv/prommod"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	lptt "github.com/sampleref/gortpdemo/ptt"
 	lweb "github.com/sampleref/gortpdemo/web"
 	lwebrtc "github.com/sampleref/gortpdemo/webrtc"
 )
@@ -18,6 +19,7 @@ import (
 func init() {
 	// Generate pem file for https
 	lweb.GenPem()
+	lptt.Initialize()
 	fmt.Println("All good")
 }
 
@@ -28,15 +30,18 @@ func main() {
 
 	port := flag.String("p", "8443", "https port")
 	lweb.HtmlFile = flag.String("html", "", "html file absolute path")
+	lweb.PttHtml = flag.String("ptthtml", "", "html file absolute path")
 	flag.Parse()
 
 	http.Handle("/metrics", promhttp.Handler())
 
 	// Websocket handle func
 	http.HandleFunc("/ws", lwebrtc.WebsocketHandler)
+	http.HandleFunc("/pttws", lptt.WsConn)
 
 	// Html handle func
 	http.HandleFunc("/", lweb.Web)
+	http.HandleFunc("/ptt", lweb.WebPtt)
 
 	// Init other state
 	log.SetFlags(0)

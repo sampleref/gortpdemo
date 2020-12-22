@@ -16,6 +16,7 @@ import (
 )
 
 var HtmlFile *string
+var PttHtml *string
 
 func GenPem() {
 
@@ -59,6 +60,13 @@ func GenPem() {
 func Web(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		t, _ := template.ParseFiles(*HtmlFile)
+		lutil.CheckError(t.Execute(w, nil))
+	}
+}
+
+func WebPtt(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" {
+		t, _ := template.ParseFiles(*PttHtml)
 		lutil.CheckError(t.Execute(w, nil))
 	}
 }
