@@ -25,8 +25,10 @@ var peerConnectionConfig = webrtc.Configuration{
 }
 
 var (
-	//API
-	api *webrtc.API
+	//Media Engine & Setting Engine
+	mediaEngine   webrtc.MediaEngine
+	settingEngine webrtc.SettingEngine
+
 	//Floor Control
 	currentFloorPeer string
 
@@ -48,6 +50,8 @@ type WsConnPeer struct {
 	wsConn *websocket.Conn
 	// Peer Connection
 	peerConnection *webrtc.PeerConnection
+	//API
+	api *webrtc.API
 }
 
 type JsonMsg struct {
@@ -62,11 +66,11 @@ type JsonMsg struct {
 }
 
 const (
-	rtcpPLIInterval = time.Second * 3
+	rtcpPLIInterval = time.Second * 1
 )
 
 func Initialize() {
-	mediaEngine := webrtc.MediaEngine{}
+	mediaEngine = webrtc.MediaEngine{}
 	if err := mediaEngine.RegisterDefaultCodecs(); err != nil {
 		panic(err)
 	}
@@ -75,27 +79,30 @@ func Initialize() {
 	logFactory.DefaultLogLevel = logging.LogLevelDebug
 	logFactory.Writer = log.Writer()
 
-	settingEngine := webrtc.SettingEngine{LoggerFactory: logFactory}
-
-	api = webrtc.NewAPI(webrtc.WithMediaEngine(&mediaEngine), webrtc.WithSettingEngine(settingEngine))
+	settingEngine = webrtc.SettingEngine{LoggerFactory: logFactory}
 
 	// Create a local video track, all our clients will be fed via this track
 	if videoTrack == nil {
 		videoRTCPFeedback := []webrtc.RTCPFeedback{{"goog-remb", ""}, {"ccm", "fir"}, {"nack", ""}, {"nack", "pli"}}
 		var err error
 		videoTrackLock.Lock()
-		videoTrack, err = webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{webrtc.MimeTypeVP8, 90000, 0, "", videoRTCPFeedback}, "video", "pion")
+		videoTrack, err = webrtc.NewTrackLocalStaticRTP(
+			webrtc.RTPCodecCapability{webrtc.MimeTypeVP8, 90000, 0, "", videoRTCPFeedback},
+			"pionv",
+			"video",
+		)
 		videoTrackLock.Unlock()
 		lutil.CheckError(err)
 	}
 
 	// Create a local audio track, all our clients will be fed via this track
 	if audioTrack == nil {
+		audioRTCPFeedback := []webrtc.RTCPFeedback{{"transport-cc", ""}}
 		var err error
 		audioTrackLock.Lock()
 		audioTrack, err = webrtc.NewTrackLocalStaticRTP(
-			webrtc.RTPCodecCapability{webrtc.MimeTypeOpus, 48000, 2, "minptime=10;useinbandfec=1", nil},
-			"pion",
+			webrtc.RTPCodecCapability{webrtc.MimeTypeOpus, 48000, 2, "minptime=10;useinbandfec=1", audioRTCPFeedback},
+			"piona",
 			"audio",
 		)
 		audioTrackLock.Unlock()
@@ -121,13 +128,14 @@ func WsConn(w http.ResponseWriter, r *http.Request) {
 		var WsConnPeerObj = ConnMap[c]
 		if WsConnPeerObj == nil {
 			fmt.Println("New Peer Connection")
-			WsConnPeerObj = &WsConnPeer{peerId: msg.PeerId, wsConn: c}
+			api := webrtc.NewAPI(webrtc.WithMediaEngine(&mediaEngine), webrtc.WithSettingEngine(settingEngine))
+			WsConnPeerObj = &WsConnPeer{peerId: msg.PeerId, wsConn: c, api: api}
 			ConnMap[c] = WsConnPeerObj
 		}
 		if msg.Sdp != "" {
 			// Create a new RTCPeerConnection
 
-			WsConnPeerObj.peerConnection, err = api.NewPeerConnection(webrtc.Configuration{})
+			WsConnPeerObj.peerConnection, err = WsConnPeerObj.api.NewPeerConnection(webrtc.Configuration{})
 			lutil.CheckError(err)
 
 			/*tA, err := WsConnPeerObj.peerConnection.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio)
@@ -156,9 +164,9 @@ func WsConn(w http.ResponseWriter, r *http.Request) {
 						i, _, err := remoteTrack.Read(rtpBuf)
 						lutil.CheckError(err)
 						if WsConnPeerObj.peerId == currentFloorPeer {
-							videoTrackLock.RLock()
+							//videoTrackLock.RLock()
 							_, err = videoTrack.Write(rtpBuf[:i])
-							videoTrackLock.RUnlock()
+							//videoTrackLock.RUnlock()
 							if err != io.ErrClosedPipe {
 								lutil.CheckError(err)
 							}
@@ -171,9 +179,9 @@ func WsConn(w http.ResponseWriter, r *http.Request) {
 						i, _, err := remoteTrack.Read(rtpBuf)
 						if WsConnPeerObj.peerId == currentFloorPeer {
 							lutil.CheckError(err)
-							audioTrackLock.RLock()
+							//audioTrackLock.RLock()
 							_, err = audioTrack.Write(rtpBuf[:i])
-							audioTrackLock.RUnlock()
+							//audioTrackLock.RUnlock()
 							if err != io.ErrClosedPipe {
 								lutil.CheckError(err)
 							}
