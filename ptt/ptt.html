@@ -143,7 +143,7 @@ Remote Video <br/>
                                 Sdp: d.sdp,
                             };
                             sock.send(JSON.stringify(msg));
-                            console.debug("Sent Publisher sdp");
+                            console.debug("Sent Publisher sdp: " + d.sdp);
                             document.getElementById('localSDP').value = d.sdp;
                         })
                         .catch(log)

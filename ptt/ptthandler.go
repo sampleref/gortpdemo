@@ -1,10 +1,12 @@
 package ptt
 
 import (
+	"errors"
 	"fmt"
 	"github.com/gorilla/websocket"
 	"github.com/pion/logging"
 	"github.com/pion/rtcp"
+	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v3"
 	lutil "github.com/sampleref/gortpdemo/util"
 	"io"
@@ -37,6 +39,10 @@ var (
 	audioTrack     *webrtc.TrackLocalStaticRTP
 	videoTrackLock = sync.RWMutex{}
 	audioTrackLock = sync.RWMutex{}
+	// The channel of packets with a bit of buffer
+	audioPackets                 = make(chan *rtp.Packet, 60)
+	videoPackets                 = make(chan *rtp.Packet, 60)
+	localChannelTrackLinked bool = false
 
 	// Websocket upgrader
 	upgrader = websocket.Upgrader{}
@@ -110,6 +116,43 @@ func Initialize() {
 	}
 }
 
+func startLocalChannelToTracks() {
+	// Asynchronously take all packets in the channel and write them out to tracks
+	// Video
+	go func() {
+		var currTimestamp uint32
+		for i := uint16(0); ; i++ {
+			packet := <-videoPackets
+			// Timestamp on the packet is really a diff, so add it to current
+			currTimestamp += packet.Timestamp
+			packet.Timestamp = currTimestamp
+			// Keep an increasing sequence number
+			packet.SequenceNumber = i
+			// Write out the packet, ignoring closed pipe if nobody is listening
+			if err := videoTrack.WriteRTP(packet); err != nil && !errors.Is(err, io.ErrClosedPipe) {
+				panic(err)
+			}
+		}
+	}()
+	// Audio
+	go func() {
+		var currTimestamp uint32
+		for i := uint16(0); ; i++ {
+			packet := <-audioPackets
+			// Timestamp on the packet is really a diff, so add it to current
+			currTimestamp += packet.Timestamp
+			packet.Timestamp = currTimestamp
+			// Keep an increasing sequence number
+			packet.SequenceNumber = i
+			// Write out the packet, ignoring closed pipe if nobody is listening
+			if err := audioTrack.WriteRTP(packet); err != nil && !errors.Is(err, io.ErrClosedPipe) {
+				panic(err)
+			}
+		}
+	}()
+	localChannelTrackLinked = true
+}
+
 func WsConn(w http.ResponseWriter, r *http.Request) {
 	// Websocket client
 	c, err := upgrader.Upgrade(w, r, nil)
@@ -134,20 +177,11 @@ func WsConn(w http.ResponseWriter, r *http.Request) {
 		}
 		if msg.Sdp != "" {
 			// Create a new RTCPeerConnection
-
 			WsConnPeerObj.peerConnection, err = WsConnPeerObj.api.NewPeerConnection(webrtc.Configuration{})
 			lutil.CheckError(err)
-
-			/*tA, err := WsConnPeerObj.peerConnection.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio)
-			lutil.CheckError(err)
-			tA.Sender().GetParameters().Encodings[0].SSRC = webrtc.SSRC(audioTrackSSRC)
-
-			tV, err := WsConnPeerObj.peerConnection.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo)
-			lutil.CheckError(err)
-			tV.Sender().GetParameters().Encodings[0].SSRC = webrtc.SSRC(videoTrackSSRC)*/
-
 			WsConnPeerObj.peerConnection.OnTrack(func(remoteTrack *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
 				if remoteTrack.Kind() == webrtc.RTPCodecTypeVideo {
+					var lastTimestamp uint32
 					// Send a PLI on an interval so that the publisher is pushing a keyframe every rtcpPLIInterval
 					go func() {
 						ticker := time.NewTicker(rtcpPLIInterval)
@@ -159,76 +193,76 @@ func WsConn(w http.ResponseWriter, r *http.Request) {
 						}
 					}()
 					fmt.Println("New Track Fired Video")
-					rtpBuf := make([]byte, 1400)
 					for {
-						i, _, err := remoteTrack.Read(rtpBuf)
-						lutil.CheckError(err)
+						rtp, _, readErr := remoteTrack.ReadRTP()
+						lutil.CheckError(readErr)
+						// Change the timestamp to only be the delta
+						oldTimestamp := rtp.Timestamp
+						if lastTimestamp == 0 {
+							rtp.Timestamp = 0
+						} else {
+							rtp.Timestamp -= lastTimestamp
+						}
+						lastTimestamp = oldTimestamp
+
 						if WsConnPeerObj.peerId == currentFloorPeer {
-							//videoTrackLock.RLock()
-							_, err = videoTrack.Write(rtpBuf[:i])
-							//videoTrackLock.RUnlock()
-							if err != io.ErrClosedPipe {
-								lutil.CheckError(err)
-							}
+							videoPackets <- rtp
 						}
 					}
 				} else {
 					fmt.Println("New Track Fired Audio")
-					rtpBuf := make([]byte, 1400)
+					var lastTimestamp uint32
 					for {
-						i, _, err := remoteTrack.Read(rtpBuf)
+						rtp, _, readErr := remoteTrack.ReadRTP()
+						lutil.CheckError(readErr)
+						// Change the timestamp to only be the delta
+						oldTimestamp := rtp.Timestamp
+						if lastTimestamp == 0 {
+							rtp.Timestamp = 0
+						} else {
+							rtp.Timestamp -= lastTimestamp
+						}
+						lastTimestamp = oldTimestamp
+
 						if WsConnPeerObj.peerId == currentFloorPeer {
-							lutil.CheckError(err)
-							//audioTrackLock.RLock()
-							_, err = audioTrack.Write(rtpBuf[:i])
-							//audioTrackLock.RUnlock()
-							if err != io.ErrClosedPipe {
-								lutil.CheckError(err)
-							}
+							audioPackets <- rtp
 						}
 					}
 				}
 			})
 
-			//Wait Until A Local Video Track is Created
-			for {
-				videoTrackLock.RLock()
-				if videoTrack == nil {
-					videoTrackLock.RUnlock()
-					//if videoTrack == nil, waiting..
-					time.Sleep(100 * time.Millisecond)
-				} else {
-					videoTrackLock.RUnlock()
-					break
-				}
-			}
-
 			//Add local source tracks to subscribers to all peers
 
 			// Add local video track
 			videoTrackLock.RLock()
-			_, err = WsConnPeerObj.peerConnection.AddTrack(videoTrack)
+			rtpVSender, err := WsConnPeerObj.peerConnection.AddTrack(videoTrack)
 			videoTrackLock.RUnlock()
 			lutil.CheckError(err)
-
-			//Wait Until A Local Audio Track is Created
-			for {
-				audioTrackLock.RLock()
-				if audioTrack == nil {
-					audioTrackLock.RUnlock()
-					//if audioTrack == nil, waiting..
-					time.Sleep(100 * time.Millisecond)
-				} else {
-					audioTrackLock.RUnlock()
-					break
+			// Read incoming RTCP packets
+			// Before these packets are retuned they are processed by interceptors. For things
+			// like NACK this needs to be called.
+			go func() {
+				rtcpBuf := make([]byte, 1500)
+				for {
+					if _, _, rtcpErr := rtpVSender.Read(rtcpBuf); rtcpErr != nil {
+						return
+					}
 				}
-			}
+			}()
 
 			// Add local audio track
 			audioTrackLock.RLock()
-			_, err = WsConnPeerObj.peerConnection.AddTrack(audioTrack)
+			rtpASender, err := WsConnPeerObj.peerConnection.AddTrack(audioTrack)
 			audioTrackLock.RUnlock()
 			lutil.CheckError(err)
+			go func() {
+				rtcpBuf := make([]byte, 1500)
+				for {
+					if _, _, rtcpErr := rtpASender.Read(rtcpBuf); rtcpErr != nil {
+						return
+					}
+				}
+			}()
 
 			// Set the remote SessionDescription
 			lutil.CheckError(WsConnPeerObj.peerConnection.SetRemoteDescription(
@@ -265,6 +299,11 @@ func WsConn(w http.ResponseWriter, r *http.Request) {
 					fmt.Println("End of ICE Candidates")
 				}
 			})
+
+			if !localChannelTrackLinked {
+				startLocalChannelToTracks()
+			}
+
 		} else if &msg.IceCandidate != nil && msg.IceCandidate.Candidate != "" {
 			var iceCandidate = webrtc.ICECandidateInit{Candidate: msg.IceCandidate.Candidate, SDPMid: &msg.IceCandidate.SDPMid,
 				SDPMLineIndex: &msg.IceCandidate.SDPMLineIndex, UsernameFragment: nil}
