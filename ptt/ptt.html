@@ -151,9 +151,11 @@ Remote Video <br/>
 
             pc.ontrack = function (event) {
                 var el = document.getElementById('video2')
-                el.srcObject = event.streams[0]
-                el.autoplay = true
-                el.controls = true
+                if (el.srcObject == null) {
+                    el.srcObject = new MediaStream([event.track])
+                } else {
+                    el.srcObject.addTrack(event.track)
+                }
             }
             document.getElementById('signalingContainer').style = 'display: block'
         }
