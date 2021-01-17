@@ -8,6 +8,7 @@ import (
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v3"
+	lgstwebm "github.com/sampleref/gortpdemo/gstwebm"
 	lutil "github.com/sampleref/gortpdemo/util"
 	"io"
 	"log"
@@ -40,9 +41,13 @@ var (
 	videoTrackLock = sync.RWMutex{}
 	audioTrackLock = sync.RWMutex{}
 	// The channel of packets with a bit of buffer
-	audioPackets                 = make(chan *rtp.Packet, 60)
-	videoPackets                 = make(chan *rtp.Packet, 60)
-	localChannelTrackLinked bool = false
+	audioPackets            = make(chan *rtp.Packet, 60)
+	videoPackets            = make(chan *rtp.Packet, 60)
+	localChannelTrackLinked = false
+
+	// The channel of packets with a bit of buffer for Recording
+	audioPacketsChanRec = make(chan *rtp.Packet, 60)
+	videoPacketsChanRec = make(chan *rtp.Packet, 60)
 
 	// Websocket upgrader
 	upgrader = websocket.Upgrader{}
@@ -114,6 +119,38 @@ func Initialize() {
 		audioTrackLock.Unlock()
 		lutil.CheckError(err)
 	}
+}
+
+func startLocalChannelToRecordings() {
+	// Asynchronously take all packets in the channel and write them out to recording
+	// Video
+	go func() {
+		var currTimestamp uint32
+		for i := uint16(0); ; i++ {
+			packet := <-videoPacketsChanRec
+			packet = lutil.ClonePacket(packet)
+			// Timestamp on the packet is really a diff, so add it to current
+			currTimestamp += packet.Timestamp
+			packet.Timestamp = currTimestamp
+			// Keep an increasing sequence number
+			packet.SequenceNumber = i
+			lgstwebm.PushVideoRTP(packet)
+		}
+	}()
+	// Audio
+	go func() {
+		var currTimestamp uint32
+		for i := uint16(0); ; i++ {
+			packet := <-audioPacketsChanRec
+			packet = lutil.ClonePacket(packet)
+			// Timestamp on the packet is really a diff, so add it to current
+			currTimestamp += packet.Timestamp
+			packet.Timestamp = currTimestamp
+			// Keep an increasing sequence number
+			packet.SequenceNumber = i
+			lgstwebm.PushAudioRTP(packet)
+		}
+	}()
 }
 
 func startLocalChannelToTracks() {
@@ -207,6 +244,7 @@ func WsConn(w http.ResponseWriter, r *http.Request) {
 
 						if WsConnPeerObj.peerId == currentFloorPeer {
 							videoPackets <- rtp
+							videoPacketsChanRec <- rtp
 						}
 					}
 				} else {
@@ -226,6 +264,7 @@ func WsConn(w http.ResponseWriter, r *http.Request) {
 
 						if WsConnPeerObj.peerId == currentFloorPeer {
 							audioPackets <- rtp
+							audioPacketsChanRec <- rtp
 						}
 					}
 				}
@@ -302,6 +341,7 @@ func WsConn(w http.ResponseWriter, r *http.Request) {
 
 			if !localChannelTrackLinked {
 				startLocalChannelToTracks()
+				startLocalChannelToRecordings()
 			}
 
 		} else if &msg.IceCandidate != nil && msg.IceCandidate.Candidate != "" {
@@ -311,7 +351,9 @@ func WsConn(w http.ResponseWriter, r *http.Request) {
 		} else if &msg.FloorControl != nil && msg.FloorControl != "" {
 			if msg.FloorControl == "REQUEST" {
 				if currentFloorPeer == "" {
+					fileName := "test_" + lutil.StringWithCharset(5) + "_" + msg.PeerId + ".webm"
 					currentFloorPeer = msg.PeerId
+					lgstwebm.Start(fileName)
 					var sdpMsg = JsonMsg{PeerId: msg.PeerId, Sdp: "", IceCandidate: struct {
 						Candidate     string
 						SDPMid        string
@@ -331,6 +373,7 @@ func WsConn(w http.ResponseWriter, r *http.Request) {
 			} else if msg.FloorControl == "RELEASE" {
 				if currentFloorPeer != "" {
 					currentFloorPeer = ""
+					lgstwebm.Stop()
 					var sdpMsg = JsonMsg{PeerId: msg.PeerId, Sdp: "", IceCandidate: struct {
 						Candidate     string
 						SDPMid        string
