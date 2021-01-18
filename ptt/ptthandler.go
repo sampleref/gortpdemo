@@ -13,6 +13,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -48,6 +49,7 @@ var (
 	// The channel of packets with a bit of buffer for Recording
 	audioPacketsChanRec = make(chan *rtp.Packet, 60)
 	videoPacketsChanRec = make(chan *rtp.Packet, 60)
+	fileName            string
 
 	// Websocket upgrader
 	upgrader = websocket.Upgrader{}
@@ -351,7 +353,7 @@ func WsConn(w http.ResponseWriter, r *http.Request) {
 		} else if &msg.FloorControl != nil && msg.FloorControl != "" {
 			if msg.FloorControl == "REQUEST" {
 				if currentFloorPeer == "" {
-					fileName := "test_" + lutil.StringWithCharset(5) + "_" + msg.PeerId + ".webm"
+					fileName = "test_" + lutil.StringWithCharset(5) + "_" + msg.PeerId + ".webm"
 					currentFloorPeer = msg.PeerId
 					lgstwebm.Start(fileName)
 					var sdpMsg = JsonMsg{PeerId: msg.PeerId, Sdp: "", IceCandidate: struct {
@@ -374,6 +376,10 @@ func WsConn(w http.ResponseWriter, r *http.Request) {
 				if currentFloorPeer != "" {
 					currentFloorPeer = ""
 					lgstwebm.Stop()
+					fileNameAbs := lutil.GetCurrDir() + "/" + fileName
+					fileNamePrefix := "file://" + fileNameAbs
+					lgstwebm.CreateSnapForFile(fileNameAbs, strings.ReplaceAll(fileNameAbs, "webm", "png"))
+					lgstwebm.RequestDurationForFile(fileNamePrefix, "100")
 					var sdpMsg = JsonMsg{PeerId: msg.PeerId, Sdp: "", IceCandidate: struct {
 						Candidate     string
 						SDPMid        string

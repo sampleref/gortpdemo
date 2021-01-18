@@ -2,7 +2,9 @@ package util
 
 import (
 	"github.com/pion/rtp"
+	"log"
 	"math/rand"
+	"os"
 	"time"
 )
 
@@ -35,4 +37,12 @@ func ClonePacket(packet *rtp.Packet) *rtp.Packet {
 		return nil
 	}
 	return &p
+}
+
+func GetCurrDir() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		log.Fatal(err)
+	}
+	return dir
 }

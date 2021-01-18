@@ -1,5 +1,5 @@
-#ifndef GST_H
-#define GST_H
+#ifndef GSTFILESINK_H
+#define GSTFILESINK_H
 
 #include <glib.h>
 #include <gst/gst.h>

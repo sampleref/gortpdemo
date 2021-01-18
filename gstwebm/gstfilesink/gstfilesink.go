@@ -1,10 +1,10 @@
-// Package gst provides an easy API to create an appsrc pipeline
+// Package gstfilesink provides an easy API to create an appsrc pipeline
 package gstfilesink
 
 /*
 #cgo pkg-config: gstreamer-1.0 gstreamer-app-1.0
 
-#include "gst.h"
+#include "gstfilesink.h"
 
 */
 import "C"

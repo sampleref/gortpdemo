@@ -1,4 +1,4 @@
-#include "gst.h"
+#include "gstfilesink.h"
 
 #include <gst/app/gstappsrc.h>
 
